@@ -119,4 +119,102 @@ int tl_window_start(float scrollLeft, float barW, float gap, int n) {
   return i;
 }
 
+
+// ---------------------------------------------------------------------------
+// 费用内核：逐请求费用（USD），峰谷判定也在原生侧完成
+// ---------------------------------------------------------------------------
+
+/** 向下取整（freestanding 没有 math.h 的 floor）。 */
+static inline double tl_floor(double x) {
+  double t = (double)(long long)x;
+  return (t > x) ? t - 1.0 : t;
+}
+
+/** 某个日期键是否落在表里（表很小，线性扫描足够）。 */
+static inline int tl_inKeys(int key, const int* keys, int n) {
+  for (int i = 0; i < n; i++) if (keys[i] == key) return 1;
+  return 0;
+}
+
+/**
+* 天的序号 -> 公历 Y/M/D（Howard Hinnant 的 civil_from_days，1970-01-01 = 第 0 天）。
+*/
+static void tl_civilFromDays(int z, int* y, int* m, int* d) {
+  z += 719468;
+  int era = (z >= 0 ? z : z - 146096) / 146097;
+  unsigned doe = (unsigned)(z - era * 146097);
+  unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  int yy = (int)yoe + era * 400;
+  unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  unsigned mp = (5 * doy + 2) / 153;
+  unsigned dd = doy - (153 * mp + 2) / 5 + 1;
+  unsigned mm = mp + (mp < 10 ? 3 : -9);
+  *y = yy + (mm <= 2 ? 1 : 0);
+  *m = (int)mm;
+  *d = (int)dd;
+}
+
+/**
+* 一个瞬间的北京时间日历面：日期键 YYYYMMDD、星期（0=周日）、小时。
+*/
+static void tl_beijingOf(double ms, int* key, int* dow, int* hour) {
+  double bj = ms + 28800000.0;
+  double days = tl_floor(bj / 86400000.0);
+  double rem = bj - days * 86400000.0;
+  *hour = (int)(rem / 3600000.0);
+  int d = (int)days;
+  int w = (d + 4) % 7;
+  if (w < 0) w += 7;
+  *dow = w;
+  int y, m, dd;
+  tl_civilFromDays(d, &y, &m, &dd);
+  *key = y * 10000 + m * 100 + dd;
+}
+
+// 高峰 = 北京时间工作日（周一至周五，法定节假日除外）09-12 / 14-18；
+// 其余（夜间、午休、周末、法定节假日、官方调休上班日）一律空闲。
+extern "C" int tl_isPeakAt(double ms, const int* holKeys, int holCount,
+                           const int* mkKeys, int mkCount) {
+  int key = 0, dow = 0, hour = 0;
+  tl_beijingOf(ms, &key, &dow, &hour);
+  if (tl_inKeys(key, holKeys, holCount)) return 0;
+  if (tl_inKeys(key, mkKeys, mkCount)) return 0;
+  if (dow == 0 || dow == 6) return 0;
+  return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18);
+}
+
+/**
+* 逐请求费用。
+*   times      double[n]    每条请求的时刻（epoch ms）
+*   uncached/cacheRead/cacheWrite/output   float[n]  token 桶
+*   rateIdx    int32[n]     该请求的费率档下标；< 0 表示无价（费用记 0）
+*   rates      float[4*m]   每档 { hit, miss, write, out }（USD / 1e6 tokens）
+*   holKeys/mkKeys          法定节假日 / 调休上班日的 YYYYMMDD 日期键
+*   outCosts   float64[n]   输出：每条请求的 USD 费用
+* 返回总费用（USD）。价目表是空闲价，高峰请求乘 2。
+*/
+extern "C" double tl_cost(int n,
+                          const double* times,
+                          const float* uncached, const float* cacheRead,
+                          const float* cacheWrite, const float* output,
+                          const int* rateIdx, const float* rates,
+                          const int* holKeys, int holCount,
+                          const int* mkKeys, int mkCount,
+                          double* outCosts) {
+  double total = 0.0;
+  for (int i = 0; i < n; i++) {
+    const int ri = rateIdx[i];
+    if (ri < 0) { outCosts[i] = 0.0; continue; }
+    const float* r = rates + ri * 4;
+    double c = ((double)cacheRead[i] * (double)r[0]
+              + (double)uncached[i]  * (double)r[1]
+              + (double)cacheWrite[i] * (double)r[2]
+              + (double)output[i]    * (double)r[3]) / 1000000.0;
+    if (tl_isPeakAt(times[i], holKeys, holCount, mkKeys, mkCount)) c *= 2.0;
+    outCosts[i] = c;
+    total += c;
+  }
+  return total;
+}
+
 } // extern "C"
