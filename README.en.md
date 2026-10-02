@@ -4,7 +4,7 @@
 
 English | [中文](README.md)
 
-> **About this repository**: this is a **locally patched build of `dsh-context` v0.53.1** — the upstream source is not synced; this repo ships only the current, working build (`lib/`) plus the patch notes. Original author, copyright, and license: **bowenliang123** (Apache-2.0) — see "Local changes", "Acknowledgments", and "License" at the end.
+> **About this repository**: this is a **locally patched build of `dsh-context` v0.54.4** — the upstream source is not synced; this repo ships only the current, working build (`lib/`) plus the patch notes. Original author, copyright, and license: **bowenliang123** (Apache-2.0) — see "Local changes", "Acknowledgments", and "License" at the end.
 
 [![npm version](https://img.shields.io/npm/v/dsh-context)](https://www.npmjs.com/package/dsh-context)
 [![GitHub stars](https://img.shields.io/github/stars/bowenliang123/dsh-context?style=social)](https://github.com/bowenliang123/dsh-context)
@@ -108,6 +108,7 @@ One stacked bar per model request — finer than per-message — so you watch th
 
 - **Hover & pin** — scrub for an instant tooltip; click to pin the full breakdown, with provider-reported **Actual Prompt / Output / Cache** next to the estimates.
 - **Live linkage** — hovering a bar previews that step's assembled context in the Context browser beside the chart; leaving the chart returns to your own pick.
+- **✏️ Patched build: smoother scrolling on long sessions** — the original implementation triggered a full re-render plus O(total steps) scans on every scroll event, which became visibly janky past ~1000 steps. Visible-range stats now update imperatively without re-entering React, and the hot path no longer does repeated DOM lookups. See [Local changes](#local-changes) below.
 
 ### 🧭 Context Browser — open the box of any request
 
@@ -180,11 +181,31 @@ If `dsh-context` helped you understand what your agent is carrying around, a ⭐
 
 ## Local changes
 
-This repository contains only the build of `dsh-context` **v0.53.1**: two local code patches (both in `lib/client.js`) plus one packaging tweak (`package.json`).
+This repository contains only the **build** of `dsh-context` (`lib/`), with no `src/` and no toolchain. These are all of its patches against upstream:
+
+### UI patches
 
 1. **Sidebar entry relocated** — the `context-overview` registration on the `sidebar.footer.action` seat changed `order` from `10` to `-1`, moving the Context Dashboard entry to the front of the sidebar footer action area: its own row **above** the cost-meter "DeepSeek open-platform account balance" row, instead of directly above Settings.
 2. **Footer actions may wrap** — added `[class*=_footerActions]{flex-wrap:wrap}`. dsh lays the sidebar footer actions out in a **single flex row**, while every footer action is built as a full-width row (`width:100%`); two of them sharing that row squeeze each other and clip their labels (the 上下文洞察 entry was reduced to one clipped glyph pinned to the balance row). With wrapping allowed, each full-width action gets its own line.
-3. **`prepare` script removed** — upstream's `"prepare": "husky && tsdown"` runs automatically when installing with `dsh plugin add git+<this repo>`; this repository ships no `src/` or toolchain, so that script always failed. Removing it lets the install use the `lib/` published here.
+
+### Context Trend scroll performance
+
+3. **Janky horizontal scrolling on long sessions — fixed.** The original implementation ran a full React state update *and* O(total requests) scans on **every `scroll` event**, so cost grew linearly with step count and dropped frames became obvious past ~1000 steps.
+
+   What changed (all inside `makeTrendChart` in `lib/client.js`):
+
+   - **Visible-range statistics moved off React state** into refs with imperative DOM writes — scrolling no longer re-renders at all. The five Y-axis ticks are now persistent nodes updated through refs (`q3Clear`/`q1Clear` switched from conditional rendering to `visibility`).
+   - **`draw()` reads the live scale from a ref**, so a scale update lands in the same frame.
+   - **O(N) work on the render path memoized**: the `maxTotal`/`maxUp`/`maxDown` extremes and the turn grouping/offsets.
+   - **Two hot-path wastes removed**: the tooltip node is cached (no per-event `querySelector`) and the 2D context is acquired once.
+   - **±5% hysteresis on the adaptive scale** — removes the flicker where axis labels and bar heights kept jumping at the threshold as the visible range crept by one bar.
+   - CSS: `font-variant-numeric: tabular-nums` on axis ticks (text writes no longer change width) and `contain: layout paint` on the scroll container.
+
+   Deliberately **not** done: WebGL / OffscreenCanvas. The visible range is at most ~840 `fillRect` calls, nowhere near the frame budget — the bottleneck was React, not drawing.
+
+### Packaging
+
+4. **`prepare` script removed** — upstream's `"prepare": "husky && tsdown"` runs automatically when installing with `dsh plugin add git+<this repo>`; this repository ships no `src/` or toolchain, so that script always failed. Removing it lets the install use the `lib/` published here.
 
 > These code changes live only in the build. The upstream source is not synced, so a new upstream release needs the patches re-applied to its build.
 
@@ -194,10 +215,10 @@ This repository contains only the build of `dsh-context` **v0.53.1**: two local 
 - Upstream: <https://github.com/bowenliang123/dsh-context>
 - This patched build: <https://github.com/ycm50/dsh-context>
 
-All code, documentation, and design in this repository come from upstream [`dsh-context`](https://github.com/bowenliang123/dsh-context) (v0.53.1); only the patches listed above were applied on top of its build.
+All code, documentation, and design in this repository come from upstream [`dsh-context`](https://github.com/bowenliang123/dsh-context) (v0.54.4); only the patches listed above were applied on top of its build.
 
 ## License
 
 [Apache License 2.0](LICENSE) — Copyright 2025 **bowenliang123**.
 
-This repository is a locally patched build of upstream [`dsh-context`](https://github.com/bowenliang123/dsh-context) v0.53.1; all code and documentation remain the original author's copyright and are distributed under Apache-2.0. See [`LICENSE`](LICENSE) for the full terms.
+This repository is a locally patched build of upstream [`dsh-context`](https://github.com/bowenliang123/dsh-context) v0.54.4; all code and documentation remain the original author's copyright and are distributed under Apache-2.0. See [`LICENSE`](LICENSE) for the full terms.

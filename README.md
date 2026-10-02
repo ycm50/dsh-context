@@ -4,7 +4,7 @@
 
 **中文** | [English](README.en.md)
 
-> **本仓库说明**：这是 `dsh-context` **v0.53.1 构建产物的本地修补版** —— 不同步上游源码，仓库里只有当前可用的构建代码（`lib/`）与本次修补说明。原作者、版权与许可：**bowenliang123**（Apache-2.0），详见文末「本地改动」「致谢」「License」。
+> **本仓库说明**：这是 `dsh-context` **v0.54.4 构建产物的本地修补版** —— 不同步上游源码，仓库里只有当前可用的构建代码（`lib/`）与本次修补说明。原作者、版权与许可：**bowenliang123**（Apache-2.0），详见文末「本地改动」「致谢」「License」。
 
 [![npm version](https://img.shields.io/npm/v/dsh-context)](https://www.npmjs.com/package/dsh-context)
 [![GitHub stars](https://img.shields.io/github/stars/bowenliang123/dsh-context?style=social)](https://github.com/bowenliang123/dsh-context)
@@ -113,6 +113,7 @@ dsh plugin --profile web add git+https://github.com/ycm50/dsh-context.git
 
 - **悬停与钉住** —— 划过即得即时提示；点击钉住完整拆分，估算值旁给出提供方上报的 **Actual Prompt / Output / Cache**。
 - **实时联动** —— 悬停某条柱子会在旁边 Context 浏览器里预览该步装配出的上下文；离开图表则回到你自己选中的那一步。
+- **✏️ 修补版：长会话滚动更顺** —— 原实现在每个滚动事件里都触发一次完整重渲染与 O(总步数) 扫描，步数上千后横向滚动会明显卡顿。现在可见范围内的刻度统计走命令式更新、不进 React，热路径也去掉了重复查询。详见下方[本地改动](#本地改动--local-changes)。
 
 ### 🧭 Context Browser —— 打开任意请求的黑盒
 
@@ -185,13 +186,35 @@ dsh plugin --profile web add git+https://github.com/ycm50/dsh-context.git
 
 ## 本地改动 / Local changes
 
-本仓库只包含 `dsh-context` **v0.53.1** 的构建产物：两处代码修补落在 `lib/client.js`，另有一处打包调整（`package.json`）：
+本仓库只包含 `dsh-context` 的**构建产物**（`lib/`），不含 `src/` 与构建工具链。以下是本修补版相对上游的全部改动：
+
+### 界面修补
 
 1. **侧边栏「上下文洞察」入口换位** —— `sidebar.footer.action` 席位上的 `context-overview` 注册，`order` 由 `10` 改为 `-1`，入口移到侧边栏底部动作区最前面，也就是费用插件「DeepSeek 开放平台账户余额」那一行**之上**（而不是紧贴「设置」）。
 2. **底部动作区允许换行** —— 追加 `[class*=_footerActions]{flex-wrap:wrap}`。DSH 侧边栏把底部动作放在**单行 flex** 容器里，而每个动作自带整行宽度（`width:100%`），两个动作挤在同一行会互相压缩、标签被截断（表现为「上下文洞察」只剩一个「上」字贴在余额行右侧）；允许换行后，整行宽度的动作各占一行。
-3. **去掉 `prepare` 脚本** —— 上游 `package.json` 里的 `"prepare": "husky && tsdown"` 会在 `dsh plugin add git+<本仓库>` 安装时自动执行；本仓库不含 `src/` 与构建工具链，这个脚本必然失败。删掉它之后，安装会直接使用随仓库发布的 `lib/`。
 
-> 以上代码改动只落在构建产物上，未同步上游源码；上游发布新版本后需要在新构建上重新施加。
+### Context Trend 滚动性能
+
+3. **上千步时横向滚动卡顿 —— 已修**。原实现在**每个 `scroll` 事件**里都做一整套 React 状态更新与 O(总请求数) 扫描，成本随步数线性增长，步数上千就明显掉帧。
+
+   改动（全部落在 `lib/client.js` 的 `makeTrendChart` 内）：
+
+   - **可见窗口统计改为 ref + 命令式写 DOM**（不再 `setState`）—— 滚动期间**完全不进 React**。Y 轴 5 个刻度由常驻节点 + `ref` 更新（`q3Clear/q1Clear` 从「节点有无」变成 `visibility` 切换）。
+   - **`draw()` 从 `scaleRef` 读当前尺度**，于是同一帧内就能用上刚更新的归一化值。
+   - **重渲染路径上的 O(N) 加锁**：`maxTotal/maxUp/maxDown` 与轮次分组/偏移量包进 `useMemo`。
+   - **热路径去掉两处浪费**：tip 节点改为缓存引用（不再每事件 `querySelector`）；2D 上下文只取一次。
+   - **自适应刻度加 ±5% 迟滞** —— 修掉极值逐柱小步变化时 Y 轴与柱高在临界点反复跳的抖动。
+   - CSS：轴刻度 `font-variant-numeric: tabular-nums`（写文本不改宽度）、滚动容器 `contain: layout paint`。
+
+   设计取舍：**没有**引入 WebGL / OffscreenCanvas —— 可见区最多约 840 次 `fillRect`，2D canvas 远未到帧预算；瓶颈在 React 而非绘制。
+
+   > 详细分析与验证见仓库外的技术报告；改动只落在构建产物上，未同步上游源码。
+
+### 打包
+
+4. **去掉 `prepare` 脚本** —— 上游 `package.json` 里的 `"prepare": "husky && tsdown"` 会在 `dsh plugin add git+<本仓库>` 安装时自动执行；本仓库不含 `src/` 与构建工具链，这个脚本必然失败。删掉它之后，安装会直接使用随仓库发布的 `lib/`。
+
+> 以上代码改动**只落在构建产物上**，未同步上游源码；上游发布新版本后需要在新构建上重新施加。
 
 ## 致谢 / Acknowledgments
 
@@ -199,10 +222,10 @@ dsh plugin --profile web add git+https://github.com/ycm50/dsh-context.git
 - 上游仓库 / Upstream：<https://github.com/bowenliang123/dsh-context>
 - 本修补版仓库 / This patched build：<https://github.com/ycm50/dsh-context>
 
-本仓库的全部代码、文档与设计均来自上游 [`dsh-context`](https://github.com/bowenliang123/dsh-context)（v0.53.1），仅在上游构建产物上做了上面列出的修补。
+本仓库的全部代码、文档与设计均来自上游 [`dsh-context`](https://github.com/bowenliang123/dsh-context)（v0.54.4），仅在上游构建产物上做了上面列出的修补。
 
 ## License
 
 [Apache License 2.0](LICENSE) — Copyright 2025 **bowenliang123**。
 
-本仓库是上游 [`dsh-context`](https://github.com/bowenliang123/dsh-context) v0.53.1 构建产物的本地修补版，代码与文档版权归原作者所有，按 Apache-2.0 分发；完整条款见仓库根目录的 [`LICENSE`](LICENSE)。
+本仓库是上游 [`dsh-context`](https://github.com/bowenliang123/dsh-context) v0.54.4 构建产物的本地修补版，代码与文档版权归原作者所有，按 Apache-2.0 分发；完整条款见仓库根目录的 [`LICENSE`](LICENSE)。
